@@ -28,38 +28,50 @@ export function ChatInterface() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
-  // --- Speech Synthesis (Voice Introduction) ---
-  const [spokenIntroId, setSpokenIntroId] = useState<string | null>(null);
-  const initialAiMessageIdRef = useRef<string | null>(null);
+  // --- Speech Synthesis (Voice Output for AI messages) ---
+  const [spokenMessageIds, setSpokenMessageIds] = useState(new Set<string>());
 
   useEffect(() => {
-    if (conversationHistory.length > 0 && conversationHistory[0].speaker === 'ai' && !initialAiMessageIdRef.current) {
-      initialAiMessageIdRef.current = conversationHistory[0].id;
-    }
+    const latestAiMessage = conversationHistory.filter(msg => msg.speaker === 'ai').pop();
 
-    const messageToSpeak = conversationHistory.find(
-      (msg) => msg.id === initialAiMessageIdRef.current && msg.speaker === 'ai' && msg.id !== spokenIntroId
-    );
-
-    if (messageToSpeak) {
+    if (latestAiMessage && !spokenMessageIds.has(latestAiMessage.id)) {
       if ('speechSynthesis' in window && window.speechSynthesis) {
-        const utterance = new SpeechSynthesisUtterance(messageToSpeak.text);
+        const utterance = new SpeechSynthesisUtterance(latestAiMessage.text);
         
         const speak = () => {
           window.speechSynthesis.cancel(); // Cancel any ongoing speech
 
           const voices = window.speechSynthesis.getVoices();
-          const englishGoogleVoice = voices.find(voice => voice.lang.startsWith('en-') && voice.name.includes('Google'));
-          const defaultVoice = voices.find(voice => voice.default);
-          utterance.voice = englishGoogleVoice || defaultVoice || voices.find(voice => voice.lang.startsWith('en-')) || null;
+          let selectedVoice: SpeechSynthesisVoice | null = null;
+
+          // Try to find a female English voice
+          const femaleVoices = voices.filter(voice =>
+            voice.lang.startsWith('en-') &&
+            (voice.name.toLowerCase().includes('female') ||
+             voice.name.toLowerCase().includes('woman') ||
+             voice.name.toLowerCase().includes('zira') || // Microsoft Zira is female
+             voice.name.toLowerCase().includes('samantha') || // macOS Samantha is female
+             (voice.name.toLowerCase().includes('google') && voice.lang === 'en-US')) // Google US English is often female
+          );
+
+          if (femaleVoices.length > 0) {
+            selectedVoice = femaleVoices.find(v => v.name.toLowerCase().includes('google')) || femaleVoices[0];
+          } else {
+            // Fallback to any default English voice
+            selectedVoice = voices.find(voice => voice.lang.startsWith('en-') && voice.default) ||
+                            voices.find(voice => voice.lang.startsWith('en-')) ||
+                            null;
+          }
+          
+          utterance.voice = selectedVoice;
           
           utterance.onend = () => {
-            setSpokenIntroId(messageToSpeak.id);
+            setSpokenMessageIds(prev => new Set(prev).add(latestAiMessage.id));
           };
           utterance.onerror = (event) => {
             console.error("Speech synthesis error:", event);
-            // Don't toast here as it might be too intrusive for a non-critical feature failing silently.
-            setSpokenIntroId(messageToSpeak.id); 
+            toast({ variant: "destructive", title: "Speech Error", description: "Could not play voice response."});
+            setSpokenMessageIds(prev => new Set(prev).add(latestAiMessage.id)); // Mark as "done" to prevent retries
           };
           window.speechSynthesis.speak(utterance);
         };
@@ -70,7 +82,8 @@ export function ChatInterface() {
           speak();
         }
       } else {
-        setSpokenIntroId(messageToSpeak.id); // Mark as "done" if API not supported
+        // Speech synthesis not supported, mark as spoken to avoid retrying
+        setSpokenMessageIds(prev => new Set(prev).add(latestAiMessage.id));
       }
     }
     return () => {
@@ -78,7 +91,7 @@ export function ChatInterface() {
         window.speechSynthesis.cancel();
       }
     };
-  }, [conversationHistory, spokenIntroId, toast]);
+  }, [conversationHistory, spokenMessageIds, toast]);
 
 
   // --- Speech Recognition (Voice Input) ---
@@ -109,7 +122,6 @@ export function ChatInterface() {
           } else if (event.error === 'not-allowed') {
             errorMessage = 'Permission to use microphone was denied. Please enable it in your browser settings.';
           } else if (event.error === 'aborted') {
-            // This can happen if the user clicks the mic off button, so it's not necessarily an error to show.
             console.log('Speech recognition aborted.');
             setIsListening(false);
             return;
@@ -124,7 +136,6 @@ export function ChatInterface() {
         speechRecognitionRef.current = recognitionInstance;
       } else {
         // Speech Recognition API not supported
-        // Mic button will be disabled or show a toast on click
       }
     }
   }, [toast]);
@@ -157,6 +168,7 @@ export function ChatInterface() {
   useEffect(scrollToBottom, [conversationHistory, isLoading]);
 
   const formatConversationHistoryForAI = (history: Message[]): string => {
+    // Exclude the initial hardcoded greeting from history sent to AI if it's the only message
     const relevantHistory = history.length === 1 && history[0].text === "Hello! I'm Mitr AI. How can I help you today?" 
       ? [] 
       : history;
@@ -285,4 +297,3 @@ export function ChatInterface() {
     </Card>
   );
 }
-

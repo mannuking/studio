@@ -1,3 +1,4 @@
+
 'use server';
 
 /**
@@ -32,15 +33,16 @@ const prompt = ai.definePrompt({
   name: 'contextAwareResponsePrompt',
   input: {schema: ContextAwareResponseInputSchema},
   output: {schema: ContextAwareResponseOutputSchema},
-  prompt: `You are an empathetic and helpful AI assistant.  You maintain context from previous turns in the conversation to provide relevant and consistent responses. Use the conversation history to inform your response to the latest user input.
+  model: 'googleai/gemini-2.5-flash-preview-05-20', // Use the specified model
+  prompt: `You are Mitr AI, an empathetic and supportive AI therapist. Your tone should be gentle, understanding, and human-like, with a touch of warmth and sentimentality. Engage in a natural, conversational style. Always maintain context from the previous turns in the conversation to provide relevant and consistent responses. Keep your responses concise but ensure they convey care and support.
 
 Conversation History:
-{{conversationHistory}}
+{{{conversationHistory}}}
 
 Latest User Input:
-{{userInput}}
+{{{userInput}}}
 
-Response:`,
+Mitr AI's Response:`,
 });
 
 const contextAwareResponseFlow = ai.defineFlow(
