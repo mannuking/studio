@@ -1,3 +1,4 @@
+
 "use client";
 
 import type { FormEvent } from 'react';
@@ -6,8 +7,9 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { SendHorizonal as SendIcon, User, Bot } from 'lucide-react';
+import { SendHorizonal as SendIcon, User, Bot, Mic, MicOff } from 'lucide-react';
 import { contextAwareResponse, type ContextAwareResponseInput } from '@/ai/flows/context-aware-response';
+import { useToast } from '@/hooks/use-toast';
 
 interface Message {
   id: string;
@@ -24,6 +26,129 @@ export function ChatInterface() {
   const [error, setError] = useState<string | null>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { toast } = useToast();
+
+  // --- Speech Synthesis (Voice Introduction) ---
+  const [spokenIntroId, setSpokenIntroId] = useState<string | null>(null);
+  const initialAiMessageIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (conversationHistory.length > 0 && conversationHistory[0].speaker === 'ai' && !initialAiMessageIdRef.current) {
+      initialAiMessageIdRef.current = conversationHistory[0].id;
+    }
+
+    const messageToSpeak = conversationHistory.find(
+      (msg) => msg.id === initialAiMessageIdRef.current && msg.speaker === 'ai' && msg.id !== spokenIntroId
+    );
+
+    if (messageToSpeak) {
+      if ('speechSynthesis' in window && window.speechSynthesis) {
+        const utterance = new SpeechSynthesisUtterance(messageToSpeak.text);
+        
+        const speak = () => {
+          window.speechSynthesis.cancel(); // Cancel any ongoing speech
+
+          const voices = window.speechSynthesis.getVoices();
+          const englishGoogleVoice = voices.find(voice => voice.lang.startsWith('en-') && voice.name.includes('Google'));
+          const defaultVoice = voices.find(voice => voice.default);
+          utterance.voice = englishGoogleVoice || defaultVoice || voices.find(voice => voice.lang.startsWith('en-')) || null;
+          
+          utterance.onend = () => {
+            setSpokenIntroId(messageToSpeak.id);
+          };
+          utterance.onerror = (event) => {
+            console.error("Speech synthesis error:", event);
+            // Don't toast here as it might be too intrusive for a non-critical feature failing silently.
+            setSpokenIntroId(messageToSpeak.id); 
+          };
+          window.speechSynthesis.speak(utterance);
+        };
+
+        if (window.speechSynthesis.getVoices().length === 0) {
+          window.speechSynthesis.onvoiceschanged = speak;
+        } else {
+          speak();
+        }
+      } else {
+        setSpokenIntroId(messageToSpeak.id); // Mark as "done" if API not supported
+      }
+    }
+    return () => {
+      if ('speechSynthesis' in window && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, [conversationHistory, spokenIntroId, toast]);
+
+
+  // --- Speech Recognition (Voice Input) ---
+  const [isListening, setIsListening] = useState(false);
+  const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognitionAPI) {
+        const recognitionInstance = new SpeechRecognitionAPI();
+        recognitionInstance.continuous = false;
+        recognitionInstance.interimResults = false;
+        recognitionInstance.lang = 'en-US';
+
+        recognitionInstance.onresult = (event) => {
+          const currentTranscript = event.results[0][0].transcript;
+          setUserInput(prev => prev ? prev + ' ' + currentTranscript : currentTranscript);
+        };
+
+        recognitionInstance.onerror = (event) => {
+          console.error('Speech recognition error', event.error);
+          let errorMessage = 'Speech recognition error.';
+          if (event.error === 'no-speech') {
+            errorMessage = 'No speech was detected. Please try again.';
+          } else if (event.error === 'audio-capture') {
+            errorMessage = 'Microphone is not available or not working.';
+          } else if (event.error === 'not-allowed') {
+            errorMessage = 'Permission to use microphone was denied. Please enable it in your browser settings.';
+          } else if (event.error === 'aborted') {
+            // This can happen if the user clicks the mic off button, so it's not necessarily an error to show.
+            console.log('Speech recognition aborted.');
+            setIsListening(false);
+            return;
+          }
+          toast({ variant: "destructive", title: "Speech Error", description: errorMessage });
+          setIsListening(false);
+        };
+
+        recognitionInstance.onend = () => {
+          setIsListening(false);
+        };
+        speechRecognitionRef.current = recognitionInstance;
+      } else {
+        // Speech Recognition API not supported
+        // Mic button will be disabled or show a toast on click
+      }
+    }
+  }, [toast]);
+
+  const handleToggleListening = () => {
+    if (!speechRecognitionRef.current) {
+      toast({ variant: "destructive", title: "Unsupported", description: "Speech recognition is not supported by your browser." });
+      return;
+    }
+
+    if (isListening) {
+      speechRecognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      try {
+        speechRecognitionRef.current.start();
+        setIsListening(true);
+      } catch (e) {
+        console.error("Error starting speech recognition:", e);
+        toast({ variant: "destructive", title: "Mic Error", description: "Could not start voice input. Check microphone permissions and ensure no other app is using the mic."});
+        setIsListening(false);
+      }
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -32,7 +157,6 @@ export function ChatInterface() {
   useEffect(scrollToBottom, [conversationHistory, isLoading]);
 
   const formatConversationHistoryForAI = (history: Message[]): string => {
-    // Exclude the initial greeting from history sent to AI if it's the only AI message
     const relevantHistory = history.length === 1 && history[0].text === "Hello! I'm Mitr AI. How can I help you today?" 
       ? [] 
       : history;
@@ -43,7 +167,6 @@ export function ChatInterface() {
     if (!userInput.trim() || isLoading) return;
 
     const newUserMessage: Message = { id: crypto.randomUUID(), speaker: 'user', text: userInput.trim() };
-    // Store current conversation to pass to AI before adding the new user message to it for the AI context
     const historyForAI = formatConversationHistoryForAI(conversationHistory);
     
     setConversationHistory(prev => [...prev, newUserMessage]);
@@ -129,14 +252,31 @@ export function ChatInterface() {
           <Textarea
             value={userInput}
             onChange={(e) => setUserInput(e.target.value)}
-            placeholder="Type your message..."
+            placeholder={isListening ? "Listening..." : "Type your message..."}
             className="flex-grow resize-none rounded-full py-2 px-4 min-h-[44px] max-h-[100px]"
             rows={1}
             onKeyDown={handleKeyDown}
-            disabled={isLoading}
+            disabled={isLoading || isListening}
             aria-label="Your message"
           />
-          <Button type="submit" size="icon" className="rounded-full w-11 h-11 bg-primary hover:bg-primary/90" disabled={isLoading || !userInput.trim()} aria-label="Send message">
+          <Button 
+            type="button" 
+            size="icon" 
+            variant="ghost" 
+            onClick={handleToggleListening} 
+            disabled={isLoading || !speechRecognitionRef.current} 
+            className="rounded-full w-11 h-11 flex-shrink-0 hover:bg-accent"
+            aria-label={isListening ? "Stop listening" : "Start listening with microphone"}
+          >
+            {isListening ? <MicOff className="w-5 h-5 text-destructive" /> : <Mic className="w-5 h-5 text-primary" />}
+          </Button>
+          <Button 
+            type="submit" 
+            size="icon" 
+            className="rounded-full w-11 h-11 bg-primary hover:bg-primary/90 flex-shrink-0" 
+            disabled={isLoading || !userInput.trim() || isListening} 
+            aria-label="Send message"
+          >
             <SendIcon className="w-5 h-5" />
           </Button>
         </form>
@@ -145,3 +285,4 @@ export function ChatInterface() {
     </Card>
   );
 }
+
