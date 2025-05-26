@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import { fontFamily as defaultFontFamily } from "tailwindcss/defaultTheme";
 
 export default {
     darkMode: ["class"],
@@ -9,6 +10,10 @@ export default {
   ],
   theme: {
   	extend: {
+      fontFamily: {
+        sans: ["var(--font-geist-sans)", ...defaultFontFamily.sans],
+        mono: ["var(--font-geist-mono)", ...defaultFontFamily.mono],
+      },
   		colors: {
   			background: 'hsl(var(--background))',
   			foreground: 'hsl(var(--foreground))',
@@ -82,11 +87,16 @@ export default {
   				to: {
   					height: '0'
   				}
-  			}
+  			},
+        'fadeIn': {
+          'from': { opacity: '0', transform: 'translateY(10px)' },
+          'to': { opacity: '1', transform: 'translateY(0px)' },
+        }
   		},
   		animation: {
   			'accordion-down': 'accordion-down 0.2s ease-out',
-  			'accordion-up': 'accordion-up 0.2s ease-out'
+  			'accordion-up': 'accordion-up 0.2s ease-out',
+        'fadeIn': 'fadeIn 0.5s ease-in-out',
   		}
   	}
   },
