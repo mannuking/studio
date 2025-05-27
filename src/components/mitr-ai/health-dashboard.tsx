@@ -72,7 +72,7 @@ interface HealthAlert {
   priority: 'low' | 'medium' | 'high' | 'critical';
 }
 
-// Helper Functions (defined outside the component for clarity and hoisting)
+// Helper Functions (defined only once at the top level of the module)
 const getScoreColor = (score: number | undefined) => {
   if (score === undefined) return 'text-gray-400';
   if (score >= 80) return 'text-green-600';
@@ -81,7 +81,7 @@ const getScoreColor = (score: number | undefined) => {
 };
 
 const getScoreBgColor = (score: number | undefined) => {
-  if (score === undefined) return 'bg-gray-100 text-gray-700'; // ensure text is visible on gray
+  if (score === undefined) return 'bg-gray-100 text-gray-700';
   if (score >= 80) return 'bg-green-100 text-green-800';
   if (score >= 60) return 'bg-yellow-100 text-yellow-800';
   return 'bg-red-100 text-red-800';
@@ -101,6 +101,9 @@ const getSleepStageColor = (stage: keyof HealthMetrics['sleep']) => {
     case 'deepSleep': return 'bg-indigo-600';
     case 'remSleep': return 'bg-purple-600';
     case 'lightSleep': return 'bg-sky-500';
+    case 'totalHours': return 'bg-gray-300'; 
+    case 'efficiency': return 'bg-gray-300';
+    case 'quality': return 'bg-gray-300';
     default: return 'bg-gray-300';
   }
 };
@@ -115,7 +118,7 @@ const getAlertBorderColor = (type: HealthAlert['type']) => {
   }
 };
 
-// Helper Components (defined before HealthDashboard)
+// Helper Components (defined only once at the top level of the module)
 const CardSkeleton = ({ span, fullWidth }: { span?: string; fullWidth?: boolean }) => (
   <Card className={`${span || ''} ${fullWidth ? 'col-span-1 lg:col-span-3' : ''} shadow-lg rounded-xl overflow-hidden animate-pulse`}>
     <CardHeader className="bg-gray-200 h-16" />
@@ -141,9 +144,9 @@ const MetricCard = ({ title, value, icon: Icon, unit, trend, trendDirection = 'n
   
   let displayValue = '-';
   if (value !== undefined) {
-    if (value % 1 === 0) { // Whole number
+    if (value % 1 === 0) { 
       displayValue = value.toFixed(0);
-    } else { // Decimal number
+    } else { 
       displayValue = value.toFixed(1);
     }
   }
@@ -169,7 +172,7 @@ const MetricCard = ({ title, value, icon: Icon, unit, trend, trendDirection = 'n
 
 const ActivityStat = ({ title, value, unit, icon: Icon, goal }: {
   title: string;
-  value: string; // value is pre-formatted string (e.g., with toLocaleString())
+  value: string; 
   unit: string;
   icon: React.ElementType;
   goal?: number;
@@ -204,7 +207,6 @@ export function HealthDashboard() {
       peak: Math.round((wearablesData.heartRate?.current || 70) * 0.85),
     };
 
-    // Map sleep quality number to string
     const getQualityString = (quality?: number): 'poor' | 'fair' | 'good' | 'excellent' => {
       if (!quality) return 'fair';
       if (quality >= 80) return 'excellent';
@@ -213,7 +215,6 @@ export function HealthDashboard() {
       return 'poor';
     };
 
-    // Map stress trend
     const getStressTrend = (level?: number): 'increasing' | 'decreasing' | 'stable' => {
       if (!level) return 'stable';
       if (level > 70) return 'increasing';
@@ -485,17 +486,23 @@ export function HealthDashboard() {
               </div>
               <div>
                 <h4 className="font-semibold text-gray-700 mb-3">Sleep Stages</h4>
-                {(Object.keys(healthData.sleep) as Array<keyof Omit<HealthMetrics['sleep'], 'totalHours' | 'efficiency' | 'quality'>>)
-                  .filter(stage => stage.includes('Sleep')) // Ensure we only map actual sleep stage durations
-                  .map((stage) => (
-                  <div key={stage} className="mb-2.5">
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="capitalize text-gray-600">{stage.replace('Sleep', ' Sleep')}</span>
-                      <span className="font-medium text-gray-700">{(healthData.sleep[stage] as number).toFixed(1)}h</span>
-                    </div>
-                    <Progress value={((healthData.sleep[stage] as number) / healthData.sleep.totalHours) * 100} className={`h-2.5 ${getSleepStageColor(stage as keyof HealthMetrics['sleep'])}`} />
-                  </div>
-                ))}
+                {(Object.keys(healthData.sleep) as Array<keyof HealthMetrics['sleep']>)
+                  .filter(key => ['deepSleep', 'remSleep', 'lightSleep'].includes(key))
+                  .map((stageKey) => {
+                    const stageValue = healthData.sleep[stageKey];
+                    if (typeof stageValue === 'number') { // Type guard
+                      return (
+                        <div key={stageKey} className="mb-2.5">
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="capitalize text-gray-600">{stageKey.replace('Sleep', ' Sleep')}</span>
+                            <span className="font-medium text-gray-700">{stageValue.toFixed(1)}h</span>
+                          </div>
+                          <Progress value={(stageValue / healthData.sleep.totalHours) * 100} className={`h-2.5 ${getSleepStageColor(stageKey)}`} />
+                        </div>
+                      );
+                    }
+                    return null; // Should not happen if filter is correct
+                  })}
               </div>
             </CardContent>
           </Card>
