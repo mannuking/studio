@@ -169,9 +169,10 @@ export function EnhancedChatInterface() {
           utterance.onend = () => {
             setSpokenMessageIds(prev => new Set(prev).add(latestAiMessage.id));
           };
-          utterance.onerror = (event) => {
-            console.error("Speech synthesis error:", event);
-            toast({ variant: "destructive", title: "Speech Error", description: "Could not play voice response."});
+          utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
+            console.error("Speech synthesis error object:", event);
+            console.error("Speech synthesis error detail:", event.error);
+            toast({ variant: "destructive", title: "Speech Error", description: `Could not play voice response. Error: ${event.error}` });
             setSpokenMessageIds(prev => new Set(prev).add(latestAiMessage.id));
           };
           window.speechSynthesis.speak(utterance);
