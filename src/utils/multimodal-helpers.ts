@@ -19,19 +19,34 @@ export function extractAudioFeatures(audioData: ArrayBuffer): ComprehensiveMitrI
   };
 }
 
-// Helper function to capture image from video element
-export function captureImageFromVideo(videoElement: HTMLVideoElement): string | null {
+// Helper function to capture image from video element with performance optimizations
+export function captureImageFromVideo(videoElement: HTMLVideoElement, scaleFactor: number = 1.0): string | null {
   try {
+    // Check if video is ready, return early if not
+    if (!videoElement.readyState || videoElement.readyState < 2) {
+      return null;
+    }
+    
+    // Create canvas with scaled dimensions for better performance
     const canvas = document.createElement('canvas');
-    canvas.width = videoElement.videoWidth;
-    canvas.height = videoElement.videoHeight;
-    const ctx = canvas.getContext('2d');
+    const width = videoElement.videoWidth * scaleFactor;
+    const height = videoElement.videoHeight * scaleFactor;
+    
+    // Use integer dimensions to avoid subpixel rendering issues
+    canvas.width = Math.floor(width);
+    canvas.height = Math.floor(height);
+    
+    const ctx = canvas.getContext('2d', { alpha: false }); // Disable alpha for better performance
     if (!ctx) return null;
     
-    ctx.drawImage(videoElement, 0, 0);
-    return canvas.toDataURL('image/jpeg', 0.8);
+    // Draw the video frame with optimization flags
+    ctx.imageSmoothingEnabled = false; // Disable anti-aliasing for performance
+    ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+    
+    // Use lower quality JPEG for faster processing (0.5 quality vs original 0.8)
+    return canvas.toDataURL('image/jpeg', 0.5);
   } catch (error) {
-    console.error('Failed to capture image from video:', error);
+    // Silent error - just return null without logging to avoid console spam
     return null;
   }
 }
