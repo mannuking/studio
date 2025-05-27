@@ -13,7 +13,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 
 // Client-only import for components that use browser APIs
-const ClientSideComponents = dynamic(() => import('./client-side-components'), { ssr: false });
+// const ClientSideComponents = dynamic(() => import('./client-side-components'), { ssr: false });
 import { 
   Send as SendIcon, 
   User, 
@@ -104,6 +104,8 @@ interface AnalysisData {
   };
 }
 
+const BACKEND_URL = 'http://localhost:5000';
+
 export function EnhancedChatInterface() {
   const [userInput, setUserInput] = useState('');
   const [conversationHistory, setConversationHistory] = useState<EnhancedMessage[]>([
@@ -126,7 +128,6 @@ export function EnhancedChatInterface() {
   const [enableFacialAnalysis, setEnableFacialAnalysis] = useState(true);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const facialAnalysisIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const { toast } = useToast();
@@ -473,220 +474,6 @@ export function EnhancedChatInterface() {
     }
   };
 
-  // Camera and facial analysis states
-  const [isCameraActive, setIsCameraActive] = useState(false);
-  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
-  const [lastFacialAnalysis, setLastFacialAnalysis] = useState<any>(null);
-  const [lastVoiceAnalysis, setLastVoiceAnalysis] = useState<any>(null);
-
-  // Initialize camera when facial analysis is enabled
-
-  const initializeCamera = useCallback(async () => {
-    console.log('initializeCamera called. Current isCameraActive:', isCameraActive);
-    if (videoRef.current && videoRef.current.srcObject) {
-        console.log('initializeCamera: video already has srcObject. Skipping re-initialization.');
-        return;
-    }
-    
-    console.log('initializeCamera: Attempting to get camera stream...');
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: 'user'
-        }
-      });
-      console.log('initializeCamera: Camera stream obtained successfully.');
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        setIsCameraActive(true);
-        setCameraStream(stream);
-        console.log('initializeCamera: Video stream assigned to video element and state updated.');
-        toast({
-          title: "Camera Activated",
-          description: "Your camera feed is now active.",
-        });
-      } else {
-        console.warn('initializeCamera: videoRef.current is null, cannot assign stream.');
-        toast({
-          variant: "destructive",
-          title: "Camera Error",
-          description: "Could not find video element to display camera feed.",
-        });
-      }
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        console.log('videoRef.current.srcObject has been set.');
-        
-        // Attempt to play the video explicitly
-        try {
-          await videoRef.current.play();
-          console.log('Video explicitly played successfully via videoRef.current.play().');
-        } catch (e) {
-          console.error('Explicit play() call failed. This might be due to autoplay policies or other issues:', e);
-          // As a fallback, some browsers might need a user interaction or specific event
-          // We can also try playing on 'canplay' or 'loadedmetadata' if direct play fails
-          videoRef.current.oncanplay = () => {
-            console.log('Video oncanplay event triggered. Attempting to play again...');
-            videoRef.current?.play().catch(playError => console.error('Play attempt from oncanplay failed:', playError));
-          };
-        }
-      }
-
-      setCameraStream(stream);
-      setIsCameraActive(true);
-
-      toast({
-        title: "Camera Activated",
-        description: "Facial analysis is now active. Your expressions will be analyzed every 7 seconds.",
-      });
-
-      console.log('Camera initialized successfully, isCameraActive set to true.');
-    } catch (error) {
-      console.error('Error accessing camera:', error);
-      toast({
-        variant: "destructive",
-        title: "Camera Error",
-        description: "Could not access camera. Please check permissions.",
-      });
-      setIsCameraActive(false); // Ensure camera is marked inactive on error
-    }
-  }, [toast, setCameraStream, setIsCameraActive]); // Stable dependencies
-
-  // Stop camera and cleanup
-  const stopCamera = useCallback(() => {
-    console.log('stopCamera called...');
-    if (videoRef.current && videoRef.current.srcObject) {
-      const currentStream = videoRef.current.srcObject as MediaStream;
-      currentStream.getTracks().forEach(track => track.stop());
-      videoRef.current.srcObject = null;
-      console.log('Video stream tracks stopped and srcObject nulled from videoRef.');
-    }
-
-    // Stop tracks from cameraStream state as a fallback, then clear it.
-    setCameraStream(prevStream => {
-      if (prevStream) {
-        prevStream.getTracks().forEach(track => track.stop());
-        console.log('Tracks from previous cameraStream state stopped.');
-      }
-      return null;
-    });
-
-    setIsCameraActive(false);
-    setLastFacialAnalysis(null); // Reset facial analysis data
-    console.log('Camera stopped and states reset (isCameraActive: false, cameraStream: null).');
-  }, [setCameraStream, setIsCameraActive, setLastFacialAnalysis]); // Stable dependencies
-
-  // Capture and analyze facial expression
-  const captureFacialAnalysis = useCallback(async () => {
-    if (!videoRef.current || !isCameraActive || !enableFacialAnalysis) {
-      console.log('Facial analysis conditions not met, skipping...');
-      return;
-    }
-
-    try {
-      // Check if video is ready and playing
-      if (videoRef.current.readyState < 3) {
-        console.log('Video not ready for capture, skipping...');
-        return;
-      }
-
-      console.log('Capturing facial analysis at:', new Date().toISOString());
-      
-      const imageData = captureImageFromVideo(videoRef.current);
-      if (imageData) {
-        // Here you would typically send to your facial analysis API (Gemini)
-        // For now, we'll simulate the analysis
-        const mockFacialAnalysis = {
-          emotions: {
-            happy: Math.random() * 0.3,
-            sad: Math.random() * 0.4,
-            angry: Math.random() * 0.2,
-            surprised: Math.random() * 0.3,
-            neutral: Math.random() * 0.6,
-            confused: Math.random() * 0.4,
-          },
-          engagement: Math.random() * 100,
-          attention: Math.random() * 100,
-          timestamp: new Date().toISOString(),
-        };
-
-        setLastFacialAnalysis(mockFacialAnalysis);
-        
-        // Update current analysis with facial data
-        setCurrentAnalysis(prev => prev ? {
-          ...prev,
-          facial: mockFacialAnalysis
-        } : null);
-
-        console.log('Facial analysis completed:', mockFacialAnalysis);
-      } else {
-        console.log('Failed to capture image from video');
-      }
-    } catch (error) {
-      console.error('Error capturing facial analysis:', error);
-    }
-  }, [isCameraActive, enableFacialAnalysis]);
-
-  // Effect to handle facial analysis toggle
-
-  useEffect(() => {
-    console.log('useEffect for facial analysis toggle. enableFacialAnalysis:', enableFacialAnalysis, 'isCameraActive:', isCameraActive);
-    if (enableFacialAnalysis && !isCameraActive) {
-      console.log('Facial analysis enabled and camera not active. Initializing camera...');
-      initializeCamera();
-    } else if (!enableFacialAnalysis && isCameraActive) {
-      console.log('Facial analysis disabled and camera active. Stopping camera...');
-      stopCamera();
-    }
-  }, [enableFacialAnalysis, isCameraActive, initializeCamera, stopCamera]);
-
-  // Effect to start/stop facial analysis interval
-  useEffect(() => {
-    console.log(`Facial analysis interval effect: enableFacialAnalysis=${enableFacialAnalysis}, isCameraActive=${isCameraActive}, intervalExists=${!!facialAnalysisIntervalRef.current}`);
-    
-    if (enableFacialAnalysis && isCameraActive) {
-      if (!facialAnalysisIntervalRef.current) {
-        console.log('Condition met: Starting facial analysis interval...');
-        
-        // Start capturing facial analysis every 7 seconds
-        facialAnalysisIntervalRef.current = setInterval(() => {
-          console.log('Interval triggered - attempting facial analysis...');
-          captureFacialAnalysis();
-        }, 7000);
-
-        // Capture immediately when starting (after a short delay to ensure video is ready and playing)
-        setTimeout(() => {
-          console.log('Initial facial analysis capture attempt (after 2s delay)...');
-          captureFacialAnalysis();
-        }, 2000);
-      }
-    } else {
-      if (facialAnalysisIntervalRef.current) {
-        console.log('Condition met: Stopping facial analysis interval because enableFacialAnalysis is false or isCameraActive is false...');
-        clearInterval(facialAnalysisIntervalRef.current);
-        facialAnalysisIntervalRef.current = null;
-      }
-    }
-
-    return () => {
-      if (facialAnalysisIntervalRef.current) {
-        console.log('Cleanup from interval effect: clearing facial analysis interval...');
-        clearInterval(facialAnalysisIntervalRef.current);
-        facialAnalysisIntervalRef.current = null;
-      }
-    };
-  }, [enableFacialAnalysis, isCameraActive, captureFacialAnalysis]); // Dependencies are crucial here
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      stopCamera();
-    };
-  }, [stopCamera]);
-
   // Simplified multimodal data capture - ultra fast, no processing
   const captureMultimodalData = useCallback(async (): Promise<Partial<FastMitrInput>> => {
     // Only return the essential data for the fastest possible response
@@ -744,8 +531,8 @@ export function EnhancedChatInterface() {
           stressLevel: aiOutput.healthAnalysis.stressLevel,
           alerts: aiOutput.healthAnalysis.alerts,
         },
-        facial: lastFacialAnalysis,
-        voice: lastVoiceAnalysis,
+        facial: undefined,
+        voice: undefined,
         context: {
           intent: aiOutput.contextualInsights.therapeuticIntent,
           urgency: aiOutput.contextualInsights.urgencyLevel,
@@ -818,6 +605,90 @@ export function EnhancedChatInterface() {
     }
   };
 
+  const cameraDiskRef = useRef<HTMLVideoElement>(null);
+  const [hasMounted, setHasMounted] = useState(false);
+
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
+
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    if (hasMounted && enableFacialAnalysis && cameraDiskRef.current) {
+      navigator.mediaDevices.getUserMedia({ video: true })
+        .then((mediaStream) => {
+          stream = mediaStream;
+          if (cameraDiskRef.current) {
+            cameraDiskRef.current.srcObject = mediaStream;
+            cameraDiskRef.current.style.display = '';
+          }
+        })
+        .catch(() => {
+          if (cameraDiskRef.current) {
+            cameraDiskRef.current.style.display = 'none';
+          }
+        });
+    } else if (cameraDiskRef.current) {
+      // If facial analysis is off, clear the video srcObject and hide
+      cameraDiskRef.current.srcObject = null;
+      cameraDiskRef.current.style.display = 'none';
+    }
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+      if (cameraDiskRef.current) {
+        cameraDiskRef.current.srcObject = null;
+        cameraDiskRef.current.style.display = 'none';
+      }
+    };
+  }, [hasMounted, enableFacialAnalysis]);
+
+  // Facial analysis interval effect
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    if (hasMounted && enableFacialAnalysis && cameraDiskRef.current) {
+      interval = setInterval(() => {
+        const video = cameraDiskRef.current;
+        if (video && video.readyState >= 2) {
+          // Capture image as base64
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL('image/jpeg');
+            // Send to backend
+            fetch(`${BACKEND_URL}/api/facial-analysis`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ image: dataUrl })
+            })
+            .then(res => res.json())
+            .then(data => {
+              if (data && data.facial) {
+                setCurrentAnalysis(prev => ({
+                  ...(prev || {
+                    emotion: { primary: '', confidence: 0, distressLevel: 0 },
+                    health: { wellnessScore: 0, stressLevel: 0, alerts: [] },
+                    voice: undefined, // Or a default voice object if you have one
+                    context: { intent: '', urgency: '', alliance: 0 },
+                    safety: { riskLevel: '', concerns: [] }
+                  }),
+                  facial: data.facial
+                }));
+              }
+            });
+          }
+        }
+      }, 5000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [hasMounted, enableFacialAnalysis]);
+
   return (
     <div className="w-full h-full flex flex-col lg:flex-row gap-4 p-4 max-w-7xl mx-auto">
       {/* Main Chat Interface */}
@@ -877,26 +748,17 @@ export function EnhancedChatInterface() {
               <div ref={messagesEndRef} />
             </div>
           </ScrollArea>
-          
-          {/* Camera Feed - Only visible when facial analysis is enabled */}
-          {enableFacialAnalysis && (
-            <div className="absolute bottom-4 right-4 w-24 h-24 rounded-full overflow-hidden border-2 border-primary shadow-lg bg-black" style={{ zIndex: 9999 }}>
+          {/* Only render camera disk after mount and if facial analysis is enabled */}
+          {hasMounted && enableFacialAnalysis && (
+            <div className="fixed lg:absolute bottom-6 right-6 w-24 h-24 rounded-full overflow-hidden border-2 border-primary shadow-lg bg-black z-50" style={{ zIndex: 9999 }}>
               <video
-                ref={videoRef}
+                ref={cameraDiskRef}
                 className="w-full h-full object-cover"
                 autoPlay
                 muted
                 playsInline
-                style={{ border: '2px solid limegreen' }}
+                style={{ borderRadius: '50%' }}
               />
-              {isCameraActive && (
-                <div className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse" style={{ zIndex: 10000 }}></div>
-              )}
-              {!isCameraActive && (
-                <div className="absolute inset-0 flex items-center justify-center bg-gray-800 bg-opacity-75 rounded-full" style={{ zIndex: 10000 }}>
-                  <Camera className="w-6 h-6 text-white" />
-                </div>
-              )}
             </div>
           )}
         </CardContent>
