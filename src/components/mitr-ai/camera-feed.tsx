@@ -34,14 +34,23 @@ export function CameraFeed() {
         return;
       }
       try {
+        console.log('Attempting to get camera stream...');
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        console.log('Camera stream obtained successfully.');
         setHasCameraPermission(true);
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+          console.log('Video stream assigned to video element.');
+        } else {
+          console.warn('videoRef.current is null, cannot assign stream.');
         }
       } catch (error) {
         console.error('Error accessing camera:', error);
+        if (error instanceof Error) {
+          console.error('Camera access error name:', error.name);
+          console.error('Camera access error message:', error.message);
+        }
         setHasCameraPermission(false);
         toast({
           variant: 'destructive',

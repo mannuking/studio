@@ -2,6 +2,7 @@
 
 import React, { type FormEvent } from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,6 +11,9 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
+
+// Client-only import for components that use browser APIs
+const ClientSideComponents = dynamic(() => import('./client-side-components'), { ssr: false });
 import { 
   Send as SendIcon, 
   User, 
@@ -24,11 +28,35 @@ import {
   CheckCircle,
   Info
 } from 'lucide-react';
-import { processComprehensiveMitrRequest, type ComprehensiveMitrInput, type ComprehensiveMitrOutput } from '@/ai/flows/comprehensive-mitr-ai';
-import { captureImageFromVideo, extractAudioFeatures, generateMockWearablesData } from '@/utils/multimodal-helpers';
+import { processFastMitrRequest, type FastMitrInput, type FastMitrOutput } from '@/ai/flows/fast-mitr-ai';
+import { captureImageFromVideo, extractAudioFeatures } from '@/utils/multimodal-helpers';
 import { useToast } from '@/hooks/use-toast';
 import { clientCache } from '@/utils/client-cache';
 import { performanceMonitor } from '@/utils/performance-monitor';
+
+// Use dynamic import for lazy loading the analysis panel
+const LazyAnalysisPanel = dynamic(
+  () => import('./analysis-panel').then(mod => ({ 
+    default: mod.AnalysisPanel 
+  })),
+  { 
+    loading: () => (
+      <Card className="w-full lg:w-[350px] h-[600px] shadow-xl bg-card overflow-hidden">
+        <CardHeader className="p-4">
+          <CardTitle className="text-lg text-center">Analysis Panel</CardTitle>
+        </CardHeader>
+        <CardContent className="p-4">
+          <div className="space-y-4">
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="h-32 w-full" />
+            <Skeleton className="h-24 w-full" />
+          </div>
+        </CardContent>
+      </Card>
+    ),
+    ssr: false // Disable server-side rendering for better performance
+  }
+);
 
 interface EnhancedMessage {
   id: string;
@@ -37,8 +65,7 @@ interface EnhancedMessage {
   timestamp: string;
   emotions?: Record<string, number>;
   intent?: string;
-  analysis?: ComprehensiveMitrOutput;
-  isTemporary?: boolean; // Flag for temporary messages (like typing indicators)
+  analysis?: FastMitrOutput;
 }
 
 interface AnalysisData {
@@ -77,37 +104,13 @@ interface AnalysisData {
   };
 }
 
-// Use dynamic import for lazy loading the analysis panel
-const LazyAnalysisPanel = dynamic(
-  () => import('./analysis-panel').then(mod => ({ 
-    default: (props: any) => <mod.AnalysisPanel {...props} /> 
-  })),
-  { 
-    loading: () => (
-      <Card className="w-full lg:w-[350px] h-[600px] shadow-xl bg-card overflow-hidden">
-        <CardHeader className="p-4">
-          <CardTitle className="text-lg text-center">Analysis Panel</CardTitle>
-        </CardHeader>
-        <CardContent className="p-4">
-          <div className="space-y-4">
-            <Skeleton className="h-24 w-full" />
-            <Skeleton className="h-32 w-full" />
-            <Skeleton className="h-24 w-full" />
-          </div>
-        </CardContent>
-      </Card>
-    ),
-    ssr: false // Disable server-side rendering for better performance
-  }
-);
-
 export function EnhancedChatInterface() {
   const [userInput, setUserInput] = useState('');
   const [conversationHistory, setConversationHistory] = useState<EnhancedMessage[]>([
     { 
       id: crypto.randomUUID(), 
       speaker: 'ai', 
-      text: "Hello! I'm Mitr AI, your comprehensive therapeutic companion. I can analyze your emotions, voice, facial expressions, and even health data to provide personalized support. How are you feeling today?",
+      text: "Hello! I'm Mitr AI, your fast-responding therapeutic companion. How can I help you today?",
       timestamp: new Date().toISOString(),
     }
   ]);
@@ -122,49 +125,11 @@ export function EnhancedChatInterface() {
   const [enableVoiceAnalysis, setEnableVoiceAnalysis] = useState(true);
   const [enableFacialAnalysis, setEnableFacialAnalysis] = useState(true);
   
-  // Client-side mounting state to prevent hydration mismatch
-  const [isMounted, setIsMounted] = useState(false);
-  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const facialAnalysisIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const { toast } = useToast();
-
-  // Load conversation history from cache when component mounts
-  useEffect(() => {
-    // Set client-side mounting flag
-    setIsMounted(true);
-    
-    const loadCachedData = async () => {
-      if (conversationHistory.length <= 1) {
-        try {
-          // Only load cache if we just have the initial greeting message
-          const cachedMessages = await getMessages();
-          if (cachedMessages && cachedMessages.length > 0) {
-            setConversationHistory(prev => {
-              // Keep the greeting message and add cached messages
-              const greetingMessage = prev[0];
-              return [greetingMessage, ...cachedMessages];
-            });
-            
-            // Set last message as spoken to prevent re-speaking
-            const lastAiMessage = cachedMessages
-              .filter(msg => msg.speaker === 'ai')
-              .pop();
-              
-            if (lastAiMessage) {
-              setSpokenMessageIds(prev => new Set(prev).add(lastAiMessage.id));
-            }
-          }
-        } catch (error) {
-          // Silent fail - just continue without cached data
-        }
-      }
-    };
-    
-    loadCachedData();
-  }, [conversationHistory.length]);
 
   // --- Speech Synthesis (Voice Output for AI messages) ---
   const [spokenMessageIds, setSpokenMessageIds] = useState(new Set<string>());
@@ -515,20 +480,16 @@ export function EnhancedChatInterface() {
   const [lastVoiceAnalysis, setLastVoiceAnalysis] = useState<any>(null);
 
   // Initialize camera when facial analysis is enabled
+
   const initializeCamera = useCallback(async () => {
-    // This check is crucial if the effect calling it might not have the latest isCameraActive
-    // However, the toggle effect *should* correctly gate this via !isCameraActive.
-    // To be absolutely safe against rapid calls if the state isn't settled for the effect:
+    console.log('initializeCamera called. Current isCameraActive:', isCameraActive);
     if (videoRef.current && videoRef.current.srcObject) {
-        console.log('initializeCamera called, but video already has srcObject. Skipping.');
-        // We might still want to ensure isCameraActive is true and toast was shown.
-        // For now, assume if srcObject is set, it was initialized.
+        console.log('initializeCamera: video already has srcObject. Skipping re-initialization.');
         return;
     }
-    console.log('initializeCamera running full logic...');
-
+    
+    console.log('initializeCamera: Attempting to get camera stream...');
     try {
-      console.log('Requesting camera access...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 640 },
@@ -536,6 +497,24 @@ export function EnhancedChatInterface() {
           facingMode: 'user'
         }
       });
+      console.log('initializeCamera: Camera stream obtained successfully.');
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        setIsCameraActive(true);
+        setCameraStream(stream);
+        console.log('initializeCamera: Video stream assigned to video element and state updated.');
+        toast({
+          title: "Camera Activated",
+          description: "Your camera feed is now active.",
+        });
+      } else {
+        console.warn('initializeCamera: videoRef.current is null, cannot assign stream.');
+        toast({
+          variant: "destructive",
+          title: "Camera Error",
+          description: "Could not find video element to display camera feed.",
+        });
+      }
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -600,30 +579,34 @@ export function EnhancedChatInterface() {
     console.log('Camera stopped and states reset (isCameraActive: false, cameraStream: null).');
   }, [setCameraStream, setIsCameraActive, setLastFacialAnalysis]); // Stable dependencies
 
+  // Capture and analyze facial expression
   const captureFacialAnalysis = useCallback(async () => {
     if (!videoRef.current || !isCameraActive || !enableFacialAnalysis) {
+      console.log('Facial analysis conditions not met, skipping...');
       return;
     }
 
     try {
       // Check if video is ready and playing
       if (videoRef.current.readyState < 3) {
+        console.log('Video not ready for capture, skipping...');
         return;
       }
 
-      // Probabilistic sampling - only analyze 70% of the time to reduce processing
-      if (Math.random() > 0.7) {
-        return;
-      }
+      console.log('Capturing facial analysis at:', new Date().toISOString());
       
       const imageData = captureImageFromVideo(videoRef.current);
       if (imageData) {
-        // Simulate the analysis with minimal processing - fewer emotions to reduce complexity
+        // Here you would typically send to your facial analysis API (Gemini)
+        // For now, we'll simulate the analysis
         const mockFacialAnalysis = {
           emotions: {
             happy: Math.random() * 0.3,
             sad: Math.random() * 0.4,
+            angry: Math.random() * 0.2,
+            surprised: Math.random() * 0.3,
             neutral: Math.random() * 0.6,
+            confused: Math.random() * 0.4,
           },
           engagement: Math.random() * 100,
           attention: Math.random() * 100,
@@ -637,42 +620,52 @@ export function EnhancedChatInterface() {
           ...prev,
           facial: mockFacialAnalysis
         } : null);
+
+        console.log('Facial analysis completed:', mockFacialAnalysis);
+      } else {
+        console.log('Failed to capture image from video');
       }
     } catch (error) {
-      // Silent error handling to prevent crashes
+      console.error('Error capturing facial analysis:', error);
     }
   }, [isCameraActive, enableFacialAnalysis]);
 
   // Effect to handle facial analysis toggle
+
   useEffect(() => {
-    // Only run camera logic if component is mounted on client
-    if (!isMounted) return;
-    
-    console.log(`Facial analysis toggle effect: enableFacialAnalysis=${enableFacialAnalysis}, isCameraActive=${isCameraActive}`);
+    console.log('useEffect for facial analysis toggle. enableFacialAnalysis:', enableFacialAnalysis, 'isCameraActive:', isCameraActive);
     if (enableFacialAnalysis && !isCameraActive) {
-      console.log('Condition met: Enabling facial analysis - initializing camera...');
+      console.log('Facial analysis enabled and camera not active. Initializing camera...');
       initializeCamera();
     } else if (!enableFacialAnalysis && isCameraActive) {
-      console.log('Condition met: Disabling facial analysis - stopping camera...');
+      console.log('Facial analysis disabled and camera active. Stopping camera...');
       stopCamera();
     }
-  }, [enableFacialAnalysis, isCameraActive, isMounted, initializeCamera, stopCamera]);
+  }, [enableFacialAnalysis, isCameraActive, initializeCamera, stopCamera]);
 
   // Effect to start/stop facial analysis interval
   useEffect(() => {
-    // Only run if component is mounted on client
-    if (!isMounted) return;
+    console.log(`Facial analysis interval effect: enableFacialAnalysis=${enableFacialAnalysis}, isCameraActive=${isCameraActive}, intervalExists=${!!facialAnalysisIntervalRef.current}`);
     
     if (enableFacialAnalysis && isCameraActive) {
       if (!facialAnalysisIntervalRef.current) {
-        // Increased interval to 25 seconds to further reduce processing overhead
-        // This is a significant improvement from the original 15-second interval
+        console.log('Condition met: Starting facial analysis interval...');
+        
+        // Start capturing facial analysis every 7 seconds
         facialAnalysisIntervalRef.current = setInterval(() => {
+          console.log('Interval triggered - attempting facial analysis...');
           captureFacialAnalysis();
-        }, 25000);
+        }, 7000);
+
+        // Capture immediately when starting (after a short delay to ensure video is ready and playing)
+        setTimeout(() => {
+          console.log('Initial facial analysis capture attempt (after 2s delay)...');
+          captureFacialAnalysis();
+        }, 2000);
       }
     } else {
       if (facialAnalysisIntervalRef.current) {
+        console.log('Condition met: Stopping facial analysis interval because enableFacialAnalysis is false or isCameraActive is false...');
         clearInterval(facialAnalysisIntervalRef.current);
         facialAnalysisIntervalRef.current = null;
       }
@@ -680,11 +673,12 @@ export function EnhancedChatInterface() {
 
     return () => {
       if (facialAnalysisIntervalRef.current) {
+        console.log('Cleanup from interval effect: clearing facial analysis interval...');
         clearInterval(facialAnalysisIntervalRef.current);
         facialAnalysisIntervalRef.current = null;
       }
     };
-  }, [enableFacialAnalysis, isCameraActive, isMounted, captureFacialAnalysis]);
+  }, [enableFacialAnalysis, isCameraActive, captureFacialAnalysis]); // Dependencies are crucial here
 
   // Cleanup on unmount
   useEffect(() => {
@@ -693,156 +687,12 @@ export function EnhancedChatInterface() {
     };
   }, [stopCamera]);
 
-  // Capture multimodal data
-  const captureMultimodalData = useCallback(async (): Promise<Partial<ComprehensiveMitrInput>> => {
-    const data: Partial<ComprehensiveMitrInput> = {};
+  // Simplified multimodal data capture - ultra fast, no processing
+  const captureMultimodalData = useCallback(async (): Promise<Partial<FastMitrInput>> => {
+    // Only return the essential data for the fastest possible response
+    return {};
+  }, []);
 
-    // Capture image from video if facial analysis is enabled
-    if (enableFacialAnalysis && videoRef.current && isCameraActive) {
-      try {
-        const imageData = captureImageFromVideo(videoRef.current);
-        if (imageData) {
-          data.imageData = imageData;
-        }
-      } catch (error) {
-        console.error('Failed to capture facial image:', error);
-      }
-    }
-
-    // Generate mock audio features if voice analysis is enabled
-    if (enableVoiceAnalysis) {
-      try {
-        // Only generate voice analysis when actually needed (not on every call)
-        if (isListening || Math.random() < 0.1) { // 10% chance when not listening
-          const mockAudioFeatures = {
-            volume: isListening ? Math.random() * 0.8 + 0.2 : 0,
-            pitch: isListening ? Math.random() * 200 + 100 : 0,
-            tone: isListening ? ['confident', 'calm', 'excited', 'nervous'][Math.floor(Math.random() * 4)] : 'silent',
-            speechRate: isListening ? Math.random() * 0.5 + 0.5 : 0,
-            clarity: isListening ? Math.random() * 0.4 + 0.6 : 0,
-            timestamp: new Date().toISOString(),
-          };
-          data.audioFeatures = extractAudioFeatures(new ArrayBuffer(0));
-          setLastVoiceAnalysis(mockAudioFeatures);
-        }
-      } catch (error) {
-        console.error('Failed to extract audio features:', error);
-      }
-    }
-
-    // Generate mock wearables data if health analysis is enabled
-    if (enableHealthAnalysis) {
-      try {
-        const mockWearablesData = generateMockWearablesData();
-        data.wearablesData = {
-          heartRate: mockWearablesData.heartRate,
-          sleep: mockWearablesData.sleep,
-          activity: mockWearablesData.activity,
-          stress: mockWearablesData.stress,
-          timestamp: mockWearablesData.timestamp,
-        };
-      } catch (error) {
-        console.error('Failed to generate wearables data:', error);
-      }
-    }
-
-    return data;
-  }, [enableFacialAnalysis, enableVoiceAnalysis, enableHealthAnalysis, isListening, isCameraActive]);
-
-  // Optimized version of captureMultimodalData that captures only essential data
-  const captureMinimalMultimodalData = useCallback(async (): Promise<Partial<ComprehensiveMitrInput>> => {
-    const data: Partial<ComprehensiveMitrInput> = {};
-
-    // Further reduce facial analysis probability to 20% for even better performance
-    // Only process images at lower resolution (0.6 = 60% of original size)
-    if (enableFacialAnalysis && videoRef.current && isCameraActive && Math.random() < 0.2) {
-      try {
-        const imageData = captureImageFromVideo(videoRef.current, 0.6);
-        if (imageData) {
-          data.imageData = imageData;
-        }
-      } catch (error) {
-        // Silent fail - don't block the response for facial analysis issues
-      }
-    }
-
-    // Further reduce health data refresh rate to 15% 
-    if (enableHealthAnalysis && (!currentAnalysis?.health || Math.random() < 0.15)) {
-      try {
-        const mockWearablesData = generateMockWearablesData();
-        // Only include essential health metrics, not the full data set
-        data.wearablesData = {
-          heartRate: {
-            current: mockWearablesData.heartRate.current,
-            // Skip other heart rate fields for performance
-          },
-          stress: {
-            level: mockWearablesData.stress.level,
-          },
-          timestamp: mockWearablesData.timestamp,
-        };
-      } catch (error) {
-        // Silent fail - don't block the response for health data issues
-      }
-    }
-
-    return data;
-  }, [enableFacialAnalysis, enableHealthAnalysis, isCameraActive, currentAnalysis?.health]);
-
-  // Memory management for better performance
-  const clearUnusedMemory = useCallback(() => {
-    // Only keep the most recent 15 messages in memory to prevent memory leaks
-    if (conversationHistory.length > 15) {
-      setConversationHistory(prev => {
-        // Keep the first message (greeting) and the last 14 messages
-        const firstMessage = prev[0];
-        const recentMessages = prev.slice(-14);
-        return [firstMessage, ...recentMessages];
-      });
-    }
-    
-    // Clear spoken message IDs cache for older messages
-    if (spokenMessageIds.size > 20) {
-      const newSet = new Set<string>();
-      // Only keep the most recent message IDs
-      conversationHistory.slice(-10).forEach(msg => {
-        if (spokenMessageIds.has(msg.id)) {
-          newSet.add(msg.id);
-        }
-      });
-      setSpokenMessageIds(newSet);
-    }
-  }, [conversationHistory, spokenMessageIds]);
-  
-  // Run memory management after each interaction
-  useEffect(() => {
-    if (!isLoading && conversationHistory.length > 15) {
-      clearUnusedMemory();
-    }
-  }, [isLoading, conversationHistory.length, clearUnusedMemory]);
-
-  // Create debounced input update for better performance
-  const [debouncedUserInput, setDebouncedUserInput] = useState('');
-  
-  // Use a ref to store the timeout ID
-  const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Update the debounced value after a delay
-  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
-    setUserInput(value);
-    
-    // Clear any existing timeout
-    if (debounceTimeoutRef.current) {
-      clearTimeout(debounceTimeoutRef.current);
-    }
-    
-    // Set a new timeout
-    debounceTimeoutRef.current = setTimeout(() => {
-      setDebouncedUserInput(value);
-    }, 300);
-  };
-  
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -852,9 +702,6 @@ export function EnhancedChatInterface() {
   const handleSendMessage = async () => {
     if (!userInput.trim() || isLoading) return;
 
-    // Start performance tracking
-    const performanceId = performanceMonitor.startTiming('ai_response');
-
     const newUserMessage: EnhancedMessage = { 
       id: crypto.randomUUID(), 
       speaker: 'user', 
@@ -862,181 +709,43 @@ export function EnhancedChatInterface() {
       timestamp: new Date().toISOString(),
     };
     
-    // Check client-side cache first
-    const cacheKey = clientCache.generateKey(newUserMessage.text, {
-      historyLength: conversationHistory.length,
-      enabledFeatures: {
-        emotion: enableEmotionAnalysis,
-        facial: enableFacialAnalysis,
-        voice: enableVoiceAnalysis,
-        health: enableHealthAnalysis,
-      }
-    });
-    
-    const cachedResponse = clientCache.get<ComprehensiveMitrOutput>(cacheKey);
-    
-    if (cachedResponse) {
-      // Use cached response for instant response
-      setConversationHistory(prev => [...prev, newUserMessage, {
-        id: crypto.randomUUID(),
-        speaker: 'ai',
-        text: cachedResponse.response,
-        timestamp: new Date().toISOString(),
-        intent: cachedResponse.contextualInsights.therapeuticIntent,
-      }]);
-      
-      // Update analysis state
-      setCurrentAnalysis({
-        emotion: {
-          primary: cachedResponse.emotionAnalysis.primary,
-          confidence: cachedResponse.emotionAnalysis.confidence,
-          distressLevel: cachedResponse.emotionAnalysis.distressLevel,
-        },
-        context: {
-          intent: cachedResponse.contextualInsights.therapeuticIntent,
-          urgency: cachedResponse.contextualInsights.urgencyLevel,
-          alliance: cachedResponse.contextualInsights.therapeuticAlliance,
-        },
-        safety: {
-          riskLevel: cachedResponse.safetyAssessment.riskLevel,
-          concerns: cachedResponse.safetyAssessment.concerns,
-        },
-      });
-      
-      performanceMonitor.endTiming(performanceId, true, true); // Cache hit
-      setUserInput('');
-      return;
-    }
-    
     setConversationHistory(prev => [...prev, newUserMessage]);
     setUserInput('');
     setIsLoading(true);
     setIsAnalyzing(true);
     setError(null);
-    
-    // Show immediate feedback to improve perceived performance
-    const typingTimeout = setTimeout(() => {
-      // Create initial AI response message to show typing indicator
-      const initialMessage: EnhancedMessage = { 
-        id: crypto.randomUUID(), 
-        speaker: 'ai', 
-        text: "I'm analyzing your message...",
-        timestamp: new Date().toISOString(),
-        isTemporary: true // Flag to identify this is a temporary message
-      };
-      setConversationHistory(prev => [...prev, initialMessage]);
-    }, 400); // Reduced from 800ms to 400ms for faster feedback
 
     try {
-      // Check client-side cache first
-      const cacheKey = userInput.toLowerCase().trim();
-      const cachedAnalysis = await getAnalysisResult(cacheKey);
-      
-      if (cachedAnalysis) {
-        // We have a cached response - use it for better performance
-        console.log('Using client-side cached response');
-        clearTimeout(typingTimeout);
-        
-        // Create minimal analysis from cached data
-        setCurrentAnalysis(prev => ({
-          ...prev,
-          emotion: cachedAnalysis.emotion || {
-            primary: 'neutral',
-            confidence: 0.5,
-            distressLevel: 0.3
-          },
-          context: {
-            intent: cachedAnalysis.intent || 'general_support',
-            urgency: 'normal',
-            alliance: 0.7
-          },
-          safety: {
-            riskLevel: 'low',
-            concerns: []
-          }
-        }));
-        
-        // Create AI response message from cache
-        const cachedAiMessage: EnhancedMessage = { 
-          id: crypto.randomUUID(), 
-          speaker: 'ai', 
-          text: cachedAnalysis.response,
-          timestamp: new Date().toISOString(),
-          intent: cachedAnalysis.intent,
-        };
-        
-        // Replace the temporary message with the cached response
-        setConversationHistory(prev => {
-          const filtered = prev.filter(msg => !msg.isTemporary);
-          return [...filtered, cachedAiMessage];
-        });
-        
-        // Store the message for persistence
-        storeMessage(newUserMessage.id, newUserMessage);
-        storeMessage(cachedAiMessage.id, cachedAiMessage);
-        
-        // Log performance with cache hit
-        logPerformance(true);
-        
-        setIsLoading(false);
-        setIsAnalyzing(false);
-        return; // Skip the expensive AI processing
-      }
-      
-      // No cache hit - continue with regular processing
-      // Optimize multimodal data capture - only capture what's needed
-      // Based on enabled features to reduce processing time
-      const multimodalData = await captureMinimalMultimodalData();
+      // Capture minimal data - we're going ultra-fast
+      const multimodalData = await captureMultimodalData();
 
-      // Limit conversation history to last 6 messages for faster processing
-      // Strip out all emotion data to reduce payload size dramatically
-      const limitedHistory = conversationHistory.slice(-4).map(msg => ({
-        speaker: msg.speaker,
-        message: msg.text,
-        timestamp: msg.timestamp,
-        // Completely remove emotion data for performance
-      }));
-
-      // Prepare optimized input with minimal required data
-      const comprehensiveInput: ComprehensiveMitrInput = {
+      // Prepare fast minimal input
+      const fastInput: FastMitrInput = {
         userMessage: newUserMessage.text,
-        conversationHistory: limitedHistory,
-        ...multimodalData,
-        userProfile: {
-          therapeuticGoals: ['emotional_support', 'stress_management'],
-        },
-        sessionContext: {
-          sessionId: 'session_' + Date.now(),
-        },
+        conversationHistory: conversationHistory.map(msg => ({
+          speaker: msg.speaker,
+          message: msg.text,
+          timestamp: msg.timestamp,
+        })),
       };
 
-      // Process with comprehensive MITR AI
-      const aiOutput = await processComprehensiveMitrRequest(comprehensiveInput);
-      
-      // Clear the typing timeout if still active
-      clearTimeout(typingTimeout);
+      // Process with fast MITR AI
+      const aiOutput = await processFastMitrRequest(fastInput);
 
-      // Cache the response for future use
-      clientCache.set(cacheKey, aiOutput, 10); // Cache for 10 minutes
-
-      // Update analysis state with only essential data
+      // Update analysis state
       setCurrentAnalysis({
         emotion: {
           primary: aiOutput.emotionAnalysis.primary,
           confidence: aiOutput.emotionAnalysis.confidence,
           distressLevel: aiOutput.emotionAnalysis.distressLevel,
         },
-        health: aiOutput.healthAnalysis ? {
+        health: {
           wellnessScore: aiOutput.healthAnalysis.wellnessScore,
           stressLevel: aiOutput.healthAnalysis.stressLevel,
           alerts: aiOutput.healthAnalysis.alerts,
-        } : undefined,
-        facial: lastFacialAnalysis ? {
-          emotions: lastFacialAnalysis.emotions,
-          engagement: lastFacialAnalysis.engagement,
-          attention: lastFacialAnalysis.attention,
-          timestamp: lastFacialAnalysis.timestamp,
-        } : undefined,
+        },
+        facial: lastFacialAnalysis,
+        voice: lastVoiceAnalysis,
         context: {
           intent: aiOutput.contextualInsights.therapeuticIntent,
           urgency: aiOutput.contextualInsights.urgencyLevel,
@@ -1048,66 +757,42 @@ export function EnhancedChatInterface() {
         },
       });
 
-      // Create AI response message with minimal data
+      // Create AI response message - simplified for speed
       const aiMessage: EnhancedMessage = { 
         id: crypto.randomUUID(), 
         speaker: 'ai', 
         text: aiOutput.response,
         timestamp: new Date().toISOString(),
+        emotions: { [aiOutput.emotionAnalysis.primary]: aiOutput.emotionAnalysis.confidence },
         intent: aiOutput.contextualInsights.therapeuticIntent,
-        // Remove emotions object to reduce memory usage
+        analysis: aiOutput,
       };
 
-      // Replace the temporary message with the real response
-      setConversationHistory(prev => {
-        const filtered = prev.filter(msg => !msg.isTemporary);
-        return [...filtered, aiMessage];
-      });
-      
-      // Cache messages for persistence
-      storeMessage(newUserMessage.id, newUserMessage);
-      storeMessage(aiMessage.id, aiMessage);
-      
-      // End performance timing with success
-      performanceMonitor.endTiming(performanceId, true, false); // Success, no cache
+      setConversationHistory(prev => [...prev, aiMessage]);
 
-      // Only show critical risk alerts to avoid notification spam
-      if (aiOutput.safetyAssessment.riskLevel === 'critical' || aiOutput.safetyAssessment.riskLevel === 'high') {
+      // Only show critical alerts
+      if (aiOutput.safetyAssessment.riskLevel === 'critical') {
         toast({
-          variant: aiOutput.safetyAssessment.riskLevel === 'critical' ? 'destructive' : 'default',
+          variant: 'destructive',
           title: `${aiOutput.safetyAssessment.riskLevel.toUpperCase()} Risk Detected`,
-          description: aiOutput.safetyAssessment.concerns.slice(0, 2).join(', '), // Limit to 2 concerns
+          description: aiOutput.safetyAssessment.concerns.join(', '),
         });
       }
 
     } catch (err) {
-      clearTimeout(typingTimeout);
-      
-      // End performance timing with error
-      performanceMonitor.endTiming(performanceId, false, false, String(err));
-      
       console.error("Error calling comprehensive MITR AI:", err);
-      const errorMessageText = "I apologize for the delay. Let me try that again with a simpler approach.";
+      const errorMessageText = "Sorry, I couldn't process your message right now. Please try again later.";
       setError(errorMessageText);
-      
-      // Replace temporary message with error message if it exists
-      setConversationHistory(prev => {
-        const filtered = prev.filter(msg => !msg.isTemporary);
-        return [...filtered, { 
-          id: crypto.randomUUID(), 
-          speaker: 'ai', 
-          text: errorMessageText,
-          timestamp: new Date().toISOString(),
-        }];
-      });
+      const errorMessage: EnhancedMessage = { 
+        id: crypto.randomUUID(), 
+        speaker: 'ai', 
+        text: errorMessageText,
+        timestamp: new Date().toISOString(),
+      };
+      setConversationHistory(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
       setIsAnalyzing(false);
-      
-      // Final performance logging for error cases
-      if (performanceMetricsRef.current.endTime === 0) {
-        logPerformance(false);
-      }
     }
   };
 
@@ -1132,45 +817,6 @@ export function EnhancedChatInterface() {
       default: return 'bg-gray-100 text-gray-800';
     }
   };
-
-  // Performance monitoring
-  const performanceMetricsRef = useRef<{
-    startTime: number;
-    endTime: number;
-    responseTime: number;
-    messageCount: number;
-    cacheHits: number;
-    cacheMisses: number;
-  }>({
-    startTime: 0,
-    endTime: 0,
-    responseTime: 0,
-    messageCount: 0,
-    cacheHits: 0,
-    cacheMisses: 0,
-  });
-  
-  // Log performance metrics
-  const logPerformance = useCallback((isCacheHit: boolean = false) => {
-    const metrics = performanceMetricsRef.current;
-    metrics.endTime = performance.now();
-    metrics.responseTime = metrics.endTime - metrics.startTime;
-    metrics.messageCount++;
-    
-    if (isCacheHit) {
-      metrics.cacheHits++;
-    } else {
-      metrics.cacheMisses++;
-    }
-    
-    console.log(`Response performance metrics:
-      - Response time: ${metrics.responseTime.toFixed(2)}ms
-      - Total messages: ${metrics.messageCount}
-      - Cache hits: ${metrics.cacheHits}
-      - Cache misses: ${metrics.cacheMisses}
-      - Cache hit rate: ${(metrics.cacheHits / metrics.messageCount * 100).toFixed(1)}%
-    `);
-  }, []);
 
   return (
     <div className="w-full h-full flex flex-col lg:flex-row gap-4 p-4 max-w-7xl mx-auto">
@@ -1223,7 +869,7 @@ export function EnhancedChatInterface() {
                   <Bot className="w-6 h-6 text-primary flex-shrink-0 mb-1" />
                   <div className="p-3 rounded-xl bg-accent text-accent-foreground max-w-[85%] lg:max-w-[80%] shadow rounded-bl-none">
                     <p className="text-sm italic">
-                      {isAnalyzing ? 'Analyzing your emotions, voice, and health data...' : 'Mitr AI is thinking...'}
+                      {isAnalyzing ? 'Processing your message...' : 'Mitr AI is thinking...'}
                     </p>
                   </div>
                 </div>
@@ -1233,11 +879,11 @@ export function EnhancedChatInterface() {
           </ScrollArea>
           
           {/* Camera Feed - Only visible when facial analysis is enabled */}
-          {enableFacialAnalysis && isMounted && (
-            <div className="absolute bottom-4 right-4 w-24 h-24 overflow-hidden border-2 border-primary shadow-lg bg-black" style={{ zIndex: 9999 }}>
+          {enableFacialAnalysis && (
+            <div className="absolute bottom-4 right-4 w-24 h-24 rounded-full overflow-hidden border-2 border-primary shadow-lg bg-black" style={{ zIndex: 9999 }}>
               <video
                 ref={videoRef}
-                className="w-full h-full"
+                className="w-full h-full object-cover"
                 autoPlay
                 muted
                 playsInline
@@ -1247,17 +893,10 @@ export function EnhancedChatInterface() {
                 <div className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse" style={{ zIndex: 10000 }}></div>
               )}
               {!isCameraActive && (
-                <div className="absolute inset-0 flex items-center justify-center bg-gray-800 bg-opacity-75" style={{ zIndex: 10000 }}>
+                <div className="absolute inset-0 flex items-center justify-center bg-gray-800 bg-opacity-75 rounded-full" style={{ zIndex: 10000 }}>
                   <Camera className="w-6 h-6 text-white" />
                 </div>
               )}
-            </div>
-          )}
-          
-          {/* Camera placeholder for SSR */}
-          {enableFacialAnalysis && !isMounted && (
-            <div className="absolute bottom-4 right-4 w-24 h-24 overflow-hidden border-2 border-primary shadow-lg" style={{ zIndex: 9999 }}>
-              <Skeleton className="w-full h-full" />
             </div>
           )}
         </CardContent>
@@ -1311,35 +950,271 @@ export function EnhancedChatInterface() {
         {error && <p className="text-xs text-destructive text-center px-4 pb-2 flex-shrink-0">{error}</p>}
       </Card>
 
-      {/* Analysis Panel - Only render when needed to improve performance */}
-      {isMounted && (
-        <LazyAnalysisPanel
-          currentAnalysis={currentAnalysis}
-          isAnalyzing={isAnalyzing}
-          enableEmotionAnalysis={enableEmotionAnalysis}
-          enableHealthAnalysis={enableHealthAnalysis}
-          enableFacialAnalysis={enableFacialAnalysis}
-          enableVoiceAnalysis={enableVoiceAnalysis}
-          setEnableEmotionAnalysis={setEnableEmotionAnalysis}
-          setEnableHealthAnalysis={setEnableHealthAnalysis}
-          setEnableFacialAnalysis={setEnableFacialAnalysis}
-          setEnableVoiceAnalysis={setEnableVoiceAnalysis}
-        />
-      )}
-      {!isMounted && (
-        <Card className="w-full lg:w-[350px] h-[600px] shadow-xl bg-card overflow-hidden">
-          <CardHeader className="p-4">
-            <CardTitle className="text-lg text-center">Analysis Panel</CardTitle>
-          </CardHeader>
-          <CardContent className="p-4">
-            <div className="space-y-4">
-              <Skeleton className="h-24 w-full" />
-              <Skeleton className="h-32 w-full" />
-              <Skeleton className="h-24 w-full" />
+      {/* Analysis Panel */}
+      <Card className="w-full lg:w-80 lg:min-w-[320px] shadow-xl bg-card flex flex-col h-[400px] lg:h-[600px]">
+        <CardHeader className="flex-shrink-0 p-3">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Brain className="w-5 h-5" />
+            Live Analysis
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex-grow overflow-hidden p-3">
+          <ScrollArea className="h-full">
+            <div className="space-y-3 pr-2">
+              {/* Analysis Toggles */}
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium">Analysis Features</h4>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    variant={enableEmotionAnalysis ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setEnableEmotionAnalysis(!enableEmotionAnalysis)}
+                    className="text-xs h-7"
+                  >
+                    <Brain className="w-3 h-3 mr-1" />
+                    Emotion
+                  </Button>
+                  <Button
+                    variant={enableHealthAnalysis ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setEnableHealthAnalysis(!enableHealthAnalysis)}
+                    className="text-xs h-7"
+                  >
+                    <Heart className="w-3 h-3 mr-1" />
+                    Health
+                  </Button>
+                  <Button
+                    variant={enableVoiceAnalysis ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setEnableVoiceAnalysis(!enableVoiceAnalysis)}
+                    className="text-xs h-7"
+                  >
+                    <Mic className="w-3 h-3 mr-1" />
+                    Voice
+                  </Button>
+                  <Button
+                    variant={enableFacialAnalysis ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setEnableFacialAnalysis(!enableFacialAnalysis)}
+                    className="text-xs h-7"
+                  >
+                    <Camera className="w-3 h-3 mr-1" />
+                    Facial
+                  </Button>
+                </div>
+              </div>
+
+              {/* Current Analysis Results */}
+              {currentAnalysis && (
+                <>
+                  {/* Emotion Analysis */}
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-medium flex items-center gap-2">
+                      <Brain className="w-4 h-4" />
+                      Emotional State
+                    </h4>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs">Primary Emotion:</span>
+                        <Badge variant="secondary" className="text-xs">{currentAnalysis.emotion.primary}</Badge>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-xs">
+                          <span>Confidence</span>
+                          <span>{Math.round(currentAnalysis.emotion.confidence * 100)}%</span>
+                        </div>
+                        <Progress value={currentAnalysis.emotion.confidence * 100} className="h-1.5" />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-xs">
+                          <span>Distress Level</span>
+                          <span>{Math.round(currentAnalysis.emotion.distressLevel * 100)}%</span>
+                        </div>
+                        <Progress value={currentAnalysis.emotion.distressLevel * 100} className="h-1.5" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Health Analysis */}
+                  {currentAnalysis.health && (
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-medium flex items-center gap-2">
+                        <Heart className="w-4 h-4" />
+                        Health Metrics
+                      </h4>
+                      <div className="space-y-2">
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span>Wellness Score</span>
+                            <span>{Math.round(currentAnalysis.health.wellnessScore)}/100</span>
+                          </div>
+                          <Progress value={currentAnalysis.health.wellnessScore} className="h-1.5" />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span>Stress Level</span>
+                            <span>{Math.round(currentAnalysis.health.stressLevel)}/100</span>
+                          </div>
+                          <Progress value={currentAnalysis.health.stressLevel} className="h-1.5" />
+                        </div>
+                        {currentAnalysis.health.alerts.length > 0 && (
+                          <div className="space-y-1">
+                            {currentAnalysis.health.alerts.map((alert, index) => (
+                              <Alert key={index} className="p-2">
+                                <AlertTriangle className="w-3 h-3" />
+                                <AlertDescription className="text-xs">
+                                  {alert.message}
+                                </AlertDescription>
+                              </Alert>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Facial Analysis */}
+                  {currentAnalysis.facial && (
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-medium flex items-center gap-2">
+                        <Brain className="w-4 h-4" />
+                        Facial Analysis
+                      </h4>
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center">
+                          <span className="text-xs">Emotions:</span>
+                          <div className="flex flex-wrap gap-1">
+                            {Object.entries(currentAnalysis.facial.emotions).map(([emotion, confidence]) => (
+                              <Badge key={emotion} variant="secondary" className="text-xs">
+                                {emotion}: {Math.round(confidence * 100)}%
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span>Engagement</span>
+                            <span>{Math.round(currentAnalysis.facial.engagement)}%</span>
+                          </div>
+                          <Progress value={currentAnalysis.facial.engagement} className="h-1.5" />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span>Attention</span>
+                            <span>{Math.round(currentAnalysis.facial.attention)}%</span>
+                          </div>
+                          <Progress value={currentAnalysis.facial.attention} className="h-1.5" />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Voice Analysis */}
+                  {currentAnalysis.voice && (
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-medium flex items-center gap-2">
+                        <Mic className="w-4 h-4" />
+                        Voice Metrics
+                      </h4>
+                      <div className="space-y-2">
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span>Volume</span>
+                            <span>{Math.round(currentAnalysis.voice.volume * 100)}%</span>
+                          </div>
+                          <Progress value={currentAnalysis.voice.volume * 100} className="h-1.5" />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span>Pitch</span>
+                            <span>{Math.round(currentAnalysis.voice.pitch)} Hz</span>
+                          </div>
+                          <Progress value={currentAnalysis.voice.pitch} className="h-1.5" />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span>Tone</span>
+                            <span>{currentAnalysis.voice.tone}</span>
+                          </div>
+                          <Progress value={currentAnalysis.voice.tone === 'confident' ? 100 : 0} className="h-1.5" />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span>Speech Rate</span>
+                            <span>{Math.round(currentAnalysis.voice.speechRate * 100)}%</span>
+                          </div>
+                          <Progress value={currentAnalysis.voice.speechRate * 100} className="h-1.5" />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span>Clarity</span>
+                            <span>{Math.round(currentAnalysis.voice.clarity * 100)}%</span>
+                          </div>
+                          <Progress value={currentAnalysis.voice.clarity * 100} className="h-1.5" />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Context Analysis */}
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-medium flex items-center gap-2">
+                      <Activity className="w-4 h-4" />
+                      Context
+                    </h4>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs">Intent:</span>
+                        <Badge variant="outline" className="text-xs">{currentAnalysis.context.intent}</Badge>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs">Urgency:</span>
+                        <Badge variant="outline" className="text-xs">{currentAnalysis.context.urgency}</Badge>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-xs">
+                          <span>Therapeutic Alliance</span>
+                          <span>{currentAnalysis.context.alliance}%</span>
+                        </div>
+                        <Progress value={currentAnalysis.context.alliance} className="h-1.5" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Safety Assessment */}
+                  <div className="space-y-2 pb-2">
+                    <h4 className="text-sm font-medium flex items-center gap-2">
+                      {currentAnalysis.safety.riskLevel === 'low' ? (
+                        <CheckCircle className="w-4 h-4 text-green-600" />
+                      ) : (
+                        <AlertTriangle className="w-4 h-4 text-orange-600" />
+                      )}
+                      Safety
+                    </h4>
+                    <div className="space-y-2">
+                      <Badge className={getRiskLevelColor(currentAnalysis.safety.riskLevel)}>
+                        {currentAnalysis.safety.riskLevel.toUpperCase()} RISK
+                      </Badge>
+                      {currentAnalysis.safety.concerns.length > 0 && (
+                        <div className="space-y-1">
+                          {currentAnalysis.safety.concerns.map((concern, index) => (
+                            <Alert key={index} className="p-2">
+                              <Info className="w-3 h-3" />
+                              <AlertDescription className="text-xs break-words">
+                                {concern}
+                              </AlertDescription>
+                            </Alert>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
-          </CardContent>
-        </Card>
-      )}
+          </ScrollArea>
+        </CardContent>
+      </Card>
     </div>
   );
-}
+} 
